@@ -13,12 +13,10 @@ export interface IDeepLXData {
   code: 200
   id: number
   method: 'Free'
-  from: TSourceLanguage
-  to: TTargetLanguage
   source_lang: TSourceLanguage
   target_lang: TTargetLanguage
   data: string
-  alternatives: string[]
+  alternatives: null
 }
 
 export interface IDeepLBaseData {
@@ -52,4 +50,14 @@ export interface IDeepLDataError429 {
   code: 429
   jsonrpc: '2.0'
   error: { code: number, message: string }
+}
+
+export interface IDeepLOneShotTranslation {
+  detected_source_language: string
+  text: string
+  is_language_detection_confident: boolean
+}
+
+export interface IDeepLOneShotData {
+  translations: IDeepLOneShotTranslation[]
 }

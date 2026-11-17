@@ -1,82 +1,105 @@
 // https://developers.deepl.com/docs/api-reference/translate
 
-import type { IDeepLData, IDeepLXData, IOptions } from './types'
+import type { IDeepLData, IDeepLOneShotData, IDeepLXData, IOptions, TSourceLanguage } from './types'
 
-export const DEEPL_URL = 'https://www2.deepl.com/jsonrpc'
+export const DEEPL_URL = 'https://oneshot-free.www.deepl.com/v1/translate'
+export const MAX_TEXT_LENGTH = 1500
+
+const TARGET_LANG_MAP: Record<string, string> = {
+  'EN': 'en-US',
+  'PT': 'pt-BR',
+  'ZH': 'zh-Hans',
+  'ZH-HANS': 'zh-Hans',
+  'ZH-HANT': 'zh-Hant',
+}
+
+const SOURCE_LANG_MAP: Record<string, string> = {
+  'EN': 'en',
+  'PT': 'pt',
+  'ZH': 'zh',
+  'ZH-HANS': 'zh',
+  'ZH-HANT': 'zh',
+}
+
+function toTargetLang(lang: string): string {
+  return TARGET_LANG_MAP[lang] ?? lang.toLowerCase()
+}
+
+function toSourceLang(lang: string): string | undefined {
+  if (lang === 'AUTO') {
+    return undefined
+  }
+  return SOURCE_LANG_MAP[lang] ?? lang.toLowerCase()
+}
+
+function normalizeDetectedLang(lang: string): TSourceLanguage {
+  return lang.split('-')[0].toUpperCase() as TSourceLanguage
+}
 
 export async function translate(options: IOptions): Promise<Response> {
-  const body = getBody(options)
+  if (options.text.length > MAX_TEXT_LENGTH) {
+    return new Response(JSON.stringify({
+      code: 413,
+      message: `text exceeds maximum length: ${options.text.length} characters (anonymous oneshot limit is ${MAX_TEXT_LENGTH})`,
+    }), {
+      status: 413,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
 
   return fetch(DEEPL_URL, {
     method: 'POST',
-    body,
-    headers: { 'Content-Type': 'application/json' },
+    body: getBody(options),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'None',
+    },
   })
 }
 
-export function parse2DeepLX(data: IOptions & IDeepLData): IDeepLXData {
-  const from = data.result.lang
-  const to = data.to
-  const texts = data.result.texts[0]
+type TDeepLResponse = IOptions & (IDeepLData | IDeepLOneShotData)
+
+export function parse2DeepLX(data: TDeepLResponse): IDeepLXData {
+  if ('translations' in data) {
+    const translation = data.translations[0]
+    if (!translation?.text) {
+      throw new Error('Unexpected DeepL response: missing translation text')
+    }
+
+    return {
+      code: 200,
+      id: Date.now(),
+      method: 'Free',
+      source_lang: normalizeDetectedLang(translation.detected_source_language),
+      target_lang: data.to,
+      data: translation.text,
+      alternatives: null,
+    }
+  }
+
+  const text = data.result.texts[0]?.text
+  if (!text) {
+    throw new Error('Unexpected DeepL response: missing translation text')
+  }
+
   return {
     code: 200,
     id: data.id,
     method: 'Free',
-    from,
-    to,
-    source_lang: from,
+    source_lang: data.result.lang,
     target_lang: data.to,
-    data: texts.text,
-    alternatives: texts.alternatives.map(i => i.text),
+    data: text,
+    alternatives: null,
   }
 }
 
 export function getBody({ from, to, text }: IOptions): string {
-  const random = getRandomNumber()
-  const iCount = getICount(text)
-  const timestamp = getTimestamp(iCount)
+  const sourceLang = toSourceLang(from)
 
-  const bodyString = JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'LMT_handle_texts',
-    params: {
-      splitting: 'newlines',
-      lang: {
-        source_lang_user_selected: from,
-        target_lang: to,
-      },
-      texts: [{ text, requestAlternatives: 3 }],
-      timestamp,
-    },
-    id: random,
+  return JSON.stringify({
+    text: [text],
+    target_lang: toTargetLang(to),
+    ...(sourceLang ? { source_lang: sourceLang } : {}),
+    usage_type: 'translate',
   })
-
-  const body = handlerBodyMethod(random, bodyString)
-  return body
-}
-
-export function handlerBodyMethod(random: number, body: string): string {
-  const calc = (random + 5) % 29 === 0 || (random + 3) % 13 === 0
-  const method = calc ? '"method" : "' : '"method": "'
-  return body.replace('"method":"', method)
-}
-
-export function getTimestamp(iCount: number): number {
-  const ts = Date.now()
-  if (iCount !== 0) {
-    iCount = iCount + 1
-    return ts - (ts % iCount) + iCount
-  }
-  else {
-    return ts
-  }
-}
-
-export function getICount(translate_text: string): number {
-  return translate_text.split('i').length - 1
-}
-
-export function getRandomNumber(): number {
-  const random = Math.floor(Math.random() * 99999) + 100000
-  return random * 1000
 }

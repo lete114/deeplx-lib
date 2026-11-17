@@ -1,108 +1,35 @@
-import type { IDeepLData, IOptions } from '../src/types'
+import type { IDeepLData, IDeepLOneShotData, IOptions } from '../src/types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  DEEPL_URL,
-  getBody,
-  handlerBodyMethod,
-  parse2DeepLX,
-  translate,
-} from '../src'
+import { DEEPL_URL, getBody, parse2DeepLX, translate } from '../src'
 
-describe('handlerBodyMethod', () => {
-  it('should use correct method format based on random', () => {
-    const original = JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'LMT_handle_texts',
-      id: 123,
-    })
-    const replaced1 = handlerBodyMethod(24, original)
-    const replaced2 = handlerBodyMethod(12, original)
-    const replaced3 = handlerBodyMethod(1, original)
-
-    // 24+5=29 => %29 === 0
-    expect(replaced1).toContain('"method" : "')
-    // 12+3=15 => %13 === 2 => not match
-    expect(replaced2).toContain('"method": "')
-    // 1+3=4 => %13 === 4 && 1+5=6 => %29 !== 0
-    expect(replaced3).toContain('"method": "')
-  })
-})
-
-describe('parse2DeepLX', () => {
-  it('should convert DeepL raw response into simplified structure', () => {
-    const input: IOptions & IDeepLData = {
-      from: 'EN',
-      to: 'ZH',
-      text: 'Hello',
-      jsonrpc: '2.0',
-      id: 123456,
-      result: {
-        texts: [
-          {
-            text: '你好',
-            alternatives: [
-              { text: '您好' },
-              { text: '哈喽' },
-            ],
-          },
-        ],
-        lang: 'EN',
-        lang_is_confident: true,
-        detectedLanguages: {
-          EN: 0.9,
-          ZH: 0.1,
-        },
-      },
-    }
-
-    const output = parse2DeepLX(input)
-
-    expect(output).toEqual({
-      code: 200,
-      id: 123456,
-      method: 'Free',
-      from: 'EN',
-      to: 'ZH',
-      source_lang: 'EN',
-      target_lang: 'ZH',
-      data: '你好',
-      alternatives: ['您好', '哈喽'],
-    })
-  })
-
-  it('should handle empty alternatives gracefully', () => {
-    const input: IOptions & IDeepLData = {
-      from: 'EN',
-      to: 'ZH',
-      text: 'Hi',
-      jsonrpc: '2.0',
-      id: 654321,
-      result: {
-        texts: [
-          {
-            text: '嗨',
-            alternatives: [],
-          },
-        ],
-        lang: 'EN',
-        lang_is_confident: true,
-        detectedLanguages: {},
-      },
-    }
-
-    const output = parse2DeepLX(input)
-
-    expect(output.alternatives).toEqual([])
-    expect(output.data).toBe('嗨')
-  })
-})
+function createOptions(overrides: Partial<IOptions> = {}): IOptions {
+  return { from: 'EN', to: 'ZH', text: 'Hello, world!', ...overrides }
+}
 
 describe('getBody', () => {
-  it('should return a valid JSON string', () => {
-    const options: IOptions = { from: 'EN', to: 'ZH', text: 'Hi there' }
-    const body = getBody(options)
-    const jsonStr = body.replace(/"method"\s?:/, '"method":')
-    expect(() => JSON.parse(jsonStr)).not.toThrow()
+  it('builds an oneshot request body', () => {
+    expect(JSON.parse(getBody(createOptions()))).toEqual({
+      text: ['Hello, world!'],
+      target_lang: 'zh-Hans',
+      source_lang: 'en',
+      usage_type: 'translate',
+    })
+  })
+
+  it('omits source_lang when the source is AUTO', () => {
+    const body = JSON.parse(getBody(createOptions({ from: 'AUTO' })))
+    expect(body).not.toHaveProperty('source_lang')
+  })
+
+  it('maps target language codes', () => {
+    expect(JSON.parse(getBody(createOptions({ to: 'EN' }))).target_lang).toBe('en-US')
+    expect(JSON.parse(getBody(createOptions({ to: 'PT' }))).target_lang).toBe('pt-BR')
+    expect(JSON.parse(getBody(createOptions({ to: 'ZH' }))).target_lang).toBe('zh-Hans')
+  })
+
+  it('maps source language codes', () => {
+    expect(JSON.parse(getBody(createOptions({ from: 'EN' }))).source_lang).toBe('en')
+    expect(JSON.parse(getBody(createOptions({ from: 'ZH' }))).source_lang).toBe('zh')
   })
 })
 
@@ -114,21 +41,124 @@ describe('translate', () => {
   })
 
   afterEach(() => {
-    vi.restoreAllMocks()
+    vi.resetAllMocks()
   })
 
-  it('should throw error when blocked by DeepL', async () => {
-    mockFetch.mockResolvedValueOnce({ status: 429 } as Response)
+  it('posts to the oneshot endpoint', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
 
-    const res = await translate({ from: 'EN', to: 'ZH', text: 'Hello' })
-    expect(res.status).toBe(429)
+    await translate(createOptions())
+
+    expect(DEEPL_URL).toBe('https://oneshot-free.www.deepl.com/v1/translate')
+    expect(mockFetch).toHaveBeenCalledWith(DEEPL_URL, {
+      method: 'POST',
+      body: getBody(createOptions()),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'None',
+      },
+    })
   })
 
-  it('should return response when successful', async () => {
-    const mockResponse = { status: 200, json: async () => ({ result: 'ok' }) }
-    mockFetch.mockResolvedValueOnce(mockResponse)
-    const response = await translate({ from: 'EN', to: 'ZH', text: 'Hello' })
-    expect(response).toEqual(mockResponse)
-    expect(mockFetch).toHaveBeenCalledWith(DEEPL_URL, expect.objectContaining({ method: 'POST' }))
+  it('allows text at the 1500 character limit', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+
+    await translate(createOptions({ text: 'a'.repeat(1500) }))
+
+    expect(mockFetch).toHaveBeenCalledOnce()
+  })
+
+  it('rejects text above 1500 characters without calling upstream', async () => {
+    const response = await translate(createOptions({ text: 'a'.repeat(1501) }))
+
+    expect(response.status).toBe(413)
+    await expect(response.json()).resolves.toEqual({
+      code: 413,
+      message: expect.stringContaining('text exceeds maximum length'),
+    })
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('passes through an upstream 429 response', async () => {
+    const blocked = new Response(null, { status: 429 })
+    mockFetch.mockResolvedValueOnce(blocked)
+
+    const response = await translate(createOptions())
+
+    expect(response).toBe(blocked)
+  })
+})
+
+describe('parse2DeepLX', () => {
+  it('converts an oneshot response into the DLX shape', () => {
+    const input: IOptions & IDeepLOneShotData = {
+      ...createOptions(),
+      translations: [
+        {
+          detected_source_language: 'en',
+          text: '你好，世界！',
+          is_language_detection_confident: true,
+        },
+      ],
+    }
+
+    const output = parse2DeepLX(input)
+
+    expect(output).toMatchObject({
+      code: 200,
+      method: 'Free',
+      source_lang: 'EN',
+      target_lang: 'ZH',
+      data: '你好，世界！',
+      alternatives: null,
+    })
+    expect(output).not.toHaveProperty('from')
+    expect(output).not.toHaveProperty('to')
+    expect(typeof output.id).toBe('number')
+  })
+
+  it('normalizes regional detected languages', () => {
+    const input: IOptions & IDeepLOneShotData = {
+      ...createOptions(),
+      translations: [
+        {
+          detected_source_language: 'zh-Hans',
+          text: '你好',
+          is_language_detection_confident: false,
+        },
+      ],
+    }
+
+    expect(parse2DeepLX(input).source_lang).toBe('ZH')
+  })
+
+  it('converts a legacy JSON-RPC response into the same DLX shape', () => {
+    const input: IOptions & IDeepLData = {
+      ...createOptions(),
+      jsonrpc: '2.0',
+      id: 123456,
+      result: {
+        texts: [{ text: '你好', alternatives: [{ text: '您好' }] }],
+        lang: 'EN',
+        lang_is_confident: true,
+        detectedLanguages: {},
+      },
+    }
+
+    expect(parse2DeepLX(input)).toEqual({
+      code: 200,
+      id: 123456,
+      method: 'Free',
+      source_lang: 'EN',
+      target_lang: 'ZH',
+      data: '你好',
+      alternatives: null,
+    })
+  })
+
+  it('throws when the translation text is missing', () => {
+    const input = { ...createOptions(), translations: [] } as IOptions & IDeepLOneShotData
+
+    expect(() => parse2DeepLX(input)).toThrow(/missing translation/i)
   })
 })

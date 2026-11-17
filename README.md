@@ -13,7 +13,7 @@
 
 - 📦 Zero dependencies, extremely lightweight
 - 🌐 Supports all DeepL languages
-- 💡 Automatically constructs `jsonrpc` request bodies, mimicking browser behavior
+- 💡 Targets DeepL's current anonymous `oneshot` endpoint
 - 🧪 Fully tested with unit tests for reliability
 
 ## Installation
@@ -29,74 +29,56 @@ yarn add deeplx-lib
 ## Usage
 
 ```ts
-import { translate } from 'deeplx-lib'
+import { parse2DeepLX, translate } from 'deeplx-lib'
 
-const result = await translate({
-  from: 'EN',
-  to: 'ZH',
-  text: 'Hello, world!',
-})
+const options = { from: 'EN', to: 'ZH', text: 'Hello, world!' } as const
+const response = await translate(options)
+const data = await response.json()
 
-const data = await result.json()
-console.log(data)
+console.log(parse2DeepLX({ ...options, ...data }))
 /*
 {
-  jsonrpc: '2.0',
-  id: 123456789,
-  result: {
-    texts: [
-      {
-        alternatives: [ { text: '世界，你好' }, { text: '你好，世界！' }, { text: '大家好' } ],
-        text: '你好，世界'
-      }
-    ],
-    lang: 'EN',
-    lang_is_confident: false,
-    detectedLanguages: {
-      EN: 0.48555099999999995,
-      DE: 0.038853,
-      FR: 0.003078,
-      ES: 0.008555,
-      PT: 0.0049429999999999995,
-      IT: 0.016312,
-      NL: 0.061256,
-      PL: 0.017636,
-      RU: 0.0004969999999999999,
-      ZH: 0.0036209999999999997,
-      JA: 0.000523,
-      BG: 0.00007099999999999999,
-      CS: 0.009665,
-      DA: 0.0034609999999999997,
-      EL: 0.00016099999999999998,
-      ET: 0.008915,
-      FI: 0.002085,
-      HU: 0.004044,
-      LT: 0.00029099999999999997,
-      LV: 0.001053,
-      RO: 0.004389,
-      SK: 0.002541,
-      SL: 0.00106,
-      SV: 0.002949,
-      TR: 0.00075,
-      ID: 0.005395,
-      UK: 0.00010899999999999999,
-      KO: 0.006984,
-      NB: 0.042485999999999996,
-      AR: 0.000068,
-      VI: 0.001168,
-      HE: 0.000098,
-      unsupported: 0.26143
-    }
-  }
+  code: 200,
+  id: 1760000000000,
+  method: 'Free',
+  source_lang: 'EN',
+  target_lang: 'ZH',
+  data: '你好，世界！',
+  alternatives: null
 }
 */
+```
+
+`translate()` returns the raw `Response`; its JSON body has the oneshot shape:
+
+```json
+{
+  "translations": [
+    {
+      "detected_source_language": "en",
+      "text": "你好，世界！",
+      "is_language_detection_confident": false
+    }
+  ]
+}
+```
+
+The request body sent to DeepL is:
+
+```json
+{
+  "text": ["Hello, world!"],
+  "target_lang": "zh-Hans",
+  "source_lang": "en",
+  "usage_type": "translate"
+}
 ```
 
 ## API
 
 ### `translate(options: IOptions): Promise<Response>`
 
-Send a translation request to DeepL's internal JSON-RPC endpoint.
+Sends a translation request to DeepL's anonymous `oneshot` endpoint.
 
 #### Parameters
 
@@ -106,50 +88,36 @@ Send a translation request to DeepL's internal JSON-RPC endpoint.
 | `to`   | `TTargetLanguage` | Target language   |
 | `text` | `string`          | Text to translate |
 
-### `parse2DeepLX(data: IOptions & IDeepLData): IDeepLXData`
+`from: 'AUTO'` omits `source_lang` and lets DeepL detect the source language.
 
-Parses the raw DeepL JSON-RPC response into a simplified, standardized format for easier usage.
+If `text.length` exceeds `MAX_TEXT_LENGTH` (1500 UTF-16 code units), the request is not sent and a `413` response is returned:
 
-Useful when you want to normalize the `translate` or `fetch` result into a consistent structure.
-
-#### Example
-
-```ts
-import { parse2DeepLX, translate } from 'deeplx-lib'
-
-const translateData: IOptions = {
-  from: 'EN',
-  to: 'ZH',
-  text: 'Good morning',
-}
-
-const response = await translate(translateData)
-
-const raw = (await response.json()) as IDeepLData
-const normalized = parse2DeepLX({
-  ...translateData,
-  ...raw,
-})
-
-console.log(normalized)
-/*
+```json
 {
-  code: 200,
-  id: 123456789,
-  method: 'Free',
-  from: 'EN',
-  to: 'ZH',
-  source_lang: 'EN',
-  target_lang: 'ZH',
-  data: '早上好',
-  alternatives: ['早安', '上午好']
+  "code": 413,
+  "message": "text exceeds maximum length: 1501 characters (anonymous oneshot limit is 1500)"
 }
-*/
 ```
+
+Upstream `400` / `429` responses are passed through unchanged.
+
+### `parse2DeepLX(data): IDeepLXData`
+
+Normalizes either the oneshot response or a legacy JSON-RPC response into the DeepLX shape:
+
+| Field          | Value                                                |
+| -------------- | ---------------------------------------------------- |
+| `code`         | `200`                                                |
+| `id`           | upstream `id`, or `Date.now()` for oneshot responses |
+| `method`       | `'Free'`                                             |
+| `source_lang`  | detected language, uppercased                        |
+| `target_lang`  | the requested target language                        |
+| `data`         | translated text                                      |
+| `alternatives` | `null`                                               |
 
 ### `getBody(options: IOptions): string`
 
-Generates a JSON-RPC-compliant request body that mimics DeepL’s internal format. You can use it to manually perform the request using your own `fetch` implementation.
+Builds the oneshot request body. Useful if you want to perform the request with your own `fetch` implementation.
 
 #### Example
 
@@ -165,11 +133,11 @@ const body = getBody({
 const response = await fetch(DEEPL_URL, {
   method: 'POST',
   body,
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'None',
+  },
 })
-
-const result = await response.json()
-console.log(result) // The result is the same as `translate(options: IOptions)`
 ```
 
 ### Language Types
@@ -192,14 +160,28 @@ export interface IOptions {
 
 ### Other Exports
 
-| Method              | Description                                          |
-| ------------------- | ---------------------------------------------------- |
-| `parse2DeepLX`      | Parses the full DeepL response into a DeepLX format  |
-| `getBody`           | Constructs the JSON-RPC request body                 |
-| `getICount`         | Counts the number of "i" characters in the text      |
-| `getTimestamp`      | Generates a timestamp adjusted by the text content   |
-| `getRandomNumber`   | Generates a pseudo-random request ID                 |
-| `handlerBodyMethod` | Modifies the `method` field to emulate client format |
+| Export            | Description                                 |
+| ----------------- | ------------------------------------------- |
+| `DEEPL_URL`       | DeepL `oneshot` endpoint                    |
+| `MAX_TEXT_LENGTH` | Anonymous limit (`1500`)                    |
+| `translate`       | Sends the request and returns a `Response`  |
+| `parse2DeepLX`    | Normalizes the response into the DLX shape  |
+| `getBody`         | Builds the request body                     |
+
+## Limitations
+
+- **Single text only.** The API accepts one string per request.
+- **1500 characters.** The limit counts the whole request in UTF-16 code units and cannot be raised for anonymous traffic.
+- **No alternatives.** DeepL no longer returns alternative translations, so `alternatives` is always `null`.
+- **Server-side only.** DeepL does not send `Access-Control-Allow-Origin`, so this library cannot be called directly from a browser.
+- **Unofficial endpoint.** It can change or rate-limit (HTTP 429) without notice. There is no SLA; use the official DeepL API if you need guarantees.
+
+## Upgrading to 0.1.0
+
+- `DEEPL_URL` now points to `https://oneshot-free.www.deepl.com/v1/translate`.
+- The raw response shape changed from JSON-RPC (`result.texts`) to `translations`.
+- `parse2DeepLX` returns `source_lang` / `target_lang` and always sets `alternatives` to `null`.
+- `getICount`, `getTimestamp`, `getRandomNumber`, and `handlerBodyMethod` were removed.
 
 ## Testing
 
@@ -225,5 +207,5 @@ pnpm test
 [bundle-href]: https://bundlephobia.com/result?p=deeplx-lib
 [license-src]: https://img.shields.io/github/license/lete114/deeplx-lib.svg?style=flat&colorA=080f12&colorB=1fa669
 [license-href]: https://github.com/lete114/deeplx-lib/blob/main/LICENSE
-[jsdocs-src]: https://img.shields.io/badge/jsdocs-reference-080f12?style=flat&colorA=080f12&colorB=1fa669
+[jsdocs-src]: https://img.shields.io/badge/jsdocs-reference-080f12?colorA=080f12&colorB=1fa669
 [jsdocs-href]: https://www.jsdocs.io/package/deeplx-lib
