@@ -1,8 +1,8 @@
 name: Release
 
 permissions:
-  id-token: write
   contents: write
+  id-token: write
 
 on:
   push:
@@ -16,20 +16,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+          cache: pnpm
           registry-url: https://registry.npmjs.org/
 
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
       - run: pnpm dlx changelogithub
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
-      # # Uncomment the following lines to publish to npm on CI
+      - run: pnpm publish --dry-run --no-git-checks --access public
 
-      - run: pnpm install
-      - run: pnpm publish --no-git-checks -r --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
-          NPM_CONFIG_PROVENANCE: true
+      - run: pnpm publish --no-git-checks --access public --provenance
